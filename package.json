@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": "2",
   "functions": {
     "api/*.js": {
       "runtime": "nodejs22.x",
@@ -13,5 +13,8 @@
     "env": {
       "NODE_ENV": "production"
     }
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.75.0"
   }
 }
