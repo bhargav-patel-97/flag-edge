@@ -157,7 +157,7 @@ function getCurrentMarketSession() {
 
   const currentTime = hour * 60 + minute; // Convert to minutes since midnight
   const marketOpen = 9 * 60 + 30; // 9:30 AM
-  const marketClose = 16 * 60 + 30; // 4:30 PM
+  const marketClose = 16 * 60; // 4:00 PM
   const firstSession = 10 * 60; // 10:00 AM
   const secondSession = 11 * 60; // 11:00 AM
 
@@ -197,7 +197,7 @@ function getCurrentMarketSession() {
     currentTime: `${hour}:${minute.toString().padStart(2, '0')}`,
     dayOfWeek,
     marketOpen: "09:30",
-    marketClose: "16:30"
+    marketClose: "16:00"
   };
 }
 
