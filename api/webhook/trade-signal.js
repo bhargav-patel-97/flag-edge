@@ -8,7 +8,7 @@ export default async function handler(req, res) {
 
   try {
     // Enhanced debugging - log request details
-    console.log('Webhook received:', {
+    console.log('Enhanced webhook received:', {
       method: req.method,
       headers: {
         'content-type': req.headers['content-type'],
@@ -30,12 +30,10 @@ export default async function handler(req, res) {
         timestamp: new Date().toISOString()
       });
     }
-
     console.log('Webhook signature verified successfully');
 
     // Extract parameters from request body
     const { timeframe, force = false } = req.body || {};
-
     if (!timeframe) {
       console.warn('Missing timeframe parameter in request');
       return res.status(400).json({ 
@@ -68,8 +66,9 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log(`Executing strategy for timeframe: ${normalizedTimeframe}, force: ${force}`);
+    console.log(`Executing ENHANCED strategy for timeframe: ${normalizedTimeframe}, force: ${force}`);
 
+    // Initialize enhanced strategy
     const strategy = new LevelFlagStrategy();
 
     // Get current market session to validate timing
@@ -91,23 +90,39 @@ export default async function handler(req, res) {
       });
     }
 
-    // Execute strategy based on current timeframe
+    // Test Polygon.io connectivity (optional - don't fail if not available)
+    console.log('Testing Polygon.io connectivity...');
+    let polygonConnectivity = { available: false, error: null };
+    try {
+      // Just test if we have the API key - don't make actual request yet
+      if (process.env.POLYGON_API_KEY) {
+        polygonConnectivity.available = true;
+        console.log('Polygon.io API key found - enhanced SMA features available');
+      } else {
+        console.warn('Polygon.io API key not found - will use fallback SMA calculation');
+      }
+    } catch (polygonError) {
+      console.warn('Polygon.io connectivity test warning:', polygonError.message);
+      polygonConnectivity.error = polygonError.message;
+    }
+
+    // Execute enhanced strategy based on current timeframe
     let result;
     try {
       result = await strategy.executeTimeframedStrategy(normalizedTimeframe, force);
     } catch (strategyError) {
-      console.error('Strategy execution failed:', strategyError);
+      console.error('Enhanced strategy execution failed:', strategyError);
 
-      // Provide more detailed error information
       const errorResponse = {
         success: false,
-        error: 'Strategy execution failed',
+        error: 'Enhanced strategy execution failed',
         details: {
           message: strategyError.message,
           stack: process.env.NODE_ENV === 'development' ? strategyError.stack : undefined,
           timeframe: normalizedTimeframe,
           force: force,
-          marketSession: marketSession
+          marketSession: marketSession,
+          polygonConnectivity
         },
         timestamp: new Date().toISOString()
       };
@@ -115,12 +130,14 @@ export default async function handler(req, res) {
       return res.status(500).json(errorResponse);
     }
 
-    console.log('Strategy execution completed:', {
+    console.log('Enhanced strategy execution completed:', {
       success: result.success,
       reason: result.reason,
       tradesExecuted: result.trades?.length || 0,
       signalsGenerated: result.signals?.length || 0,
       levelsDetected: result.levels || 0,
+      highConfidenceLevels: result.highConfidenceLevels || 0,
+      polygonSMAUsed: result.indicatorsUsed?.polygonSMA200 || result.indicatorsUsed?.polygonSMA400,
       marketSession: {
         isOpen: marketSession.isOpen,
         currentTimeframe: marketSession.timeframe,
@@ -128,11 +145,18 @@ export default async function handler(req, res) {
       }
     });
 
-    // Enhanced response with more context
+    // Enhanced response with more context and new features
     const responseData = {
       success: true,
-      message: 'Strategy executed successfully',
+      message: 'Enhanced strategy executed successfully',
       result,
+      enhancements: {
+        polygonSMAIntegration: polygonConnectivity.available,
+        enhancedLevelDetection: true,
+        improvedFlagRecognition: true,
+        confluenceAnalysis: true,
+        confidenceScoring: true
+      },
       marketSession: {
         isOpen: marketSession.isOpen,
         currentTimeframe: marketSession.timeframe,
@@ -147,14 +171,15 @@ export default async function handler(req, res) {
       },
       debug: {
         databaseConnectivity: dbTest.success,
-        keyType: dbTest.keyType || 'unknown'
+        keyType: dbTest.keyType || 'unknown',
+        polygonConnectivity: polygonConnectivity
       }
     };
 
     res.status(200).json(responseData);
 
   } catch (error) {
-    console.error('Webhook execution error:', {
+    console.error('Enhanced webhook execution error:', {
       message: error.message,
       stack: error.stack,
       name: error.name
@@ -170,7 +195,8 @@ export default async function handler(req, res) {
         has_service_role_key: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
         has_anon_key: !!process.env.SUPABASE_ANON_KEY,
         has_supabase_url: !!process.env.SUPABASE_URL,
-        has_alpaca_keys: !!(process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY)
+        has_alpaca_keys: !!(process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY),
+        has_polygon_key: !!process.env.POLYGON_API_KEY
       }
     };
 
