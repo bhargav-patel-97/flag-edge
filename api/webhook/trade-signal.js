@@ -76,8 +76,44 @@ export default async function handler(req, res) {
     const marketSession = strategy.getMarketSession();
     console.log('Current market session:', marketSession);
 
+    // Test database connectivity before executing strategy
+    console.log('Testing database connectivity...');
+    const dbTest = await strategy.alpaca.testDatabaseConnection();
+    console.log('Database test result:', dbTest);
+
+    if (!dbTest.success) {
+      console.error('Database connectivity issue detected:', dbTest);
+      return res.status(500).json({
+        success: false,
+        error: 'Database connectivity issue',
+        details: dbTest,
+        timestamp: new Date().toISOString()
+      });
+    }
+
     // Execute strategy based on current timeframe
-    const result = await strategy.executeTimeframedStrategy(normalizedTimeframe, force);
+    let result;
+    try {
+      result = await strategy.executeTimeframedStrategy(normalizedTimeframe, force);
+    } catch (strategyError) {
+      console.error('Strategy execution failed:', strategyError);
+
+      // Provide more detailed error information
+      const errorResponse = {
+        success: false,
+        error: 'Strategy execution failed',
+        details: {
+          message: strategyError.message,
+          stack: process.env.NODE_ENV === 'development' ? strategyError.stack : undefined,
+          timeframe: normalizedTimeframe,
+          force: force,
+          marketSession: marketSession
+        },
+        timestamp: new Date().toISOString()
+      };
+
+      return res.status(500).json(errorResponse);
+    }
 
     console.log('Strategy execution completed:', {
       success: result.success,
@@ -93,7 +129,7 @@ export default async function handler(req, res) {
     });
 
     // Enhanced response with more context
-    res.status(200).json({
+    const responseData = {
       success: true,
       message: 'Strategy executed successfully',
       result,
@@ -108,8 +144,14 @@ export default async function handler(req, res) {
         normalizedTimeframe: normalizedTimeframe,
         forced: force,
         timestamp: new Date().toISOString()
+      },
+      debug: {
+        databaseConnectivity: dbTest.success,
+        keyType: dbTest.keyType || 'unknown'
       }
-    });
+    };
+
+    res.status(200).json(responseData);
 
   } catch (error) {
     console.error('Webhook execution error:', {
@@ -118,12 +160,20 @@ export default async function handler(req, res) {
       name: error.name
     });
 
-    res.status(500).json({
+    const errorResponse = {
       success: false,
       error: error.message,
       errorType: error.name,
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
-      timestamp: new Date().toISOString()
-    });
+      timestamp: new Date().toISOString(),
+      environment: {
+        has_service_role_key: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+        has_anon_key: !!process.env.SUPABASE_ANON_KEY,
+        has_supabase_url: !!process.env.SUPABASE_URL,
+        has_alpaca_keys: !!(process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY)
+      }
+    };
+
+    res.status(500).json(errorResponse);
   }
 }
