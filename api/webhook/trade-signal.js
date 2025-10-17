@@ -5,10 +5,6 @@ import { SupabaseClient } from '../../lib/supabase-client.js';
 import { executeEnhancedStrategy } from '../../lib/level-flag-strategy.js';
 import { verifyWebhookSignature } from '../../lib/security.js';
 
-export const config = {
-  runtime: 'edge',
-};
-
 export default async function handler(req) {
   const startTime = Date.now();
   console.log('[WEBHOOK] Enhanced webhook received:', {
