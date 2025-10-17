@@ -1,13 +1,9 @@
 // api/webhook/trade-signal.js
 // Enhanced webhook endpoint - Compatible with both Node.js and Edge runtimes
+// Fixed to work with standard Supabase client exports
 
-import { SupabaseClient } from '../../lib/supabase-client.js';
-import { executeEnhancedStrategy } from '../../lib/level-flag-strategy.js';
-
-// Remove edge runtime config if causing issues
-// export const config = {
-//   runtime: 'edge',
-// };
+import { createClient } from '@supabase/supabase-js';
+import { executeEnhancedStrategy } from '../../lib/enhanced-level-flag-strategy.js';
 
 export default async function handler(req, res) {
   const startTime = Date.now();
@@ -40,10 +36,8 @@ export default async function handler(req, res) {
     const errorResponse = { error: 'Method not allowed' };
     
     if (res) {
-      // Node.js runtime
       return res.status(405).json(errorResponse);
     } else {
-      // Edge runtime
       return new Response(JSON.stringify(errorResponse), {
         status: 405,
         headers: { 'Content-Type': 'application/json' }
@@ -57,17 +51,14 @@ export default async function handler(req, res) {
     const contentType = getHeader('content-type');
     
     if (req.body && typeof req.body === 'object') {
-      // Body already parsed (Node.js runtime with bodyParser)
       body = req.body;
     } else if (req.json && typeof req.json === 'function') {
-      // Edge runtime
       try {
         body = await req.json();
       } catch (e) {
         body = { timeframe: '10Min', session: 'regular' };
       }
     } else if (req.text && typeof req.text === 'function') {
-      // Edge runtime fallback
       const text = await req.text();
       try {
         body = JSON.parse(text);
@@ -75,7 +66,6 @@ export default async function handler(req, res) {
         body = { timeframe: '10Min', session: 'regular' };
       }
     } else {
-      // Fallback default
       body = { timeframe: '10Min', session: 'regular' };
     }
 
@@ -123,9 +113,36 @@ export default async function handler(req, res) {
       console.warn('[WEBHOOK] FASTCRON_SECRET not configured, skipping signature verification');
     }
 
-    // Initialize Supabase client
-    const supabase = SupabaseClient.getInstance();
-    console.log('[WEBHOOK] SupabaseClient initialized');
+    // Initialize Supabase client directly (not using getInstance)
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!supabaseUrl || !supabaseKey) {
+      console.error('[WEBHOOK] Missing Supabase credentials');
+      const errorResponse = {
+        success: false,
+        error: 'Supabase configuration missing',
+        execution_time_ms: Date.now() - startTime
+      };
+      
+      if (res) {
+        return res.status(500).json(errorResponse);
+      } else {
+        return new Response(JSON.stringify(errorResponse), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseKey, {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false
+      }
+    });
+    
+    console.log('[WEBHOOK] Supabase client initialized');
 
     // Check market session
     const marketSession = getMarketSession(timeframe, session);
@@ -255,10 +272,8 @@ export default async function handler(req, res) {
     const statusCode = result.success ? 200 : 500;
     
     if (res) {
-      // Node.js runtime
       return res.status(statusCode).json(response);
     } else {
-      // Edge runtime
       return new Response(JSON.stringify(response), {
         status: statusCode,
         headers: { 'Content-Type': 'application/json' }
@@ -278,8 +293,18 @@ export default async function handler(req, res) {
     };
 
     try {
-      const supabase = SupabaseClient.getInstance();
-      await logWebhookError(supabase, errorResponse);
+      const supabaseUrl = process.env.SUPABASE_URL;
+      const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+      
+      if (supabaseUrl && supabaseKey) {
+        const supabase = createClient(supabaseUrl, supabaseKey, {
+          auth: {
+            autoRefreshToken: false,
+            persistSession: false
+          }
+        });
+        await logWebhookError(supabase, errorResponse);
+      }
     } catch (logErr) {
       console.error('[WEBHOOK] Failed to log error:', logErr);
     }
@@ -330,14 +355,14 @@ async function testDatabaseConnection(supabase) {
   try {
     const { data, error } = await supabase
       .from('aggregated_bars')
-      .select('count(*)')
+      .select('count')
       .limit(1);
 
     if (error) {
       return {
         success: false,
         error: error.message,
-        keyType: 'unknown'
+        keyType: 'service_role'
       };
     }
 
