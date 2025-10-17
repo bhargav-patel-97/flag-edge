@@ -1,47 +1,82 @@
 // api/webhook/trade-signal.js
-// Enhanced webhook endpoint that integrates with persistent pattern and level tracking
+// Enhanced webhook endpoint - Compatible with both Node.js and Edge runtimes
 
 import { SupabaseClient } from '../../lib/supabase-client.js';
-import { executeEnhancedStrategy } from '../../lib/level-flag-strategy.js';
-import { verifyWebhookSignature } from '../../lib/security.js';
+import { executeEnhancedStrategy } from '../../lib/enhanced-level-flag-strategy.js';
 
-export default async function handler(req) {
+// Remove edge runtime config if causing issues
+// export const config = {
+//   runtime: 'edge',
+// };
+
+export default async function handler(req, res) {
   const startTime = Date.now();
+  
+  // Helper function to get headers (works with both runtime types)
+  const getHeader = (headerName) => {
+    if (req.headers && typeof req.headers.get === 'function') {
+      // Edge runtime
+      return req.headers.get(headerName);
+    } else if (req.headers && typeof req.headers === 'object') {
+      // Node.js runtime
+      return req.headers[headerName] || req.headers[headerName.toLowerCase()];
+    }
+    return undefined;
+  };
+
   console.log('[WEBHOOK] Enhanced webhook received:', {
     method: req.method,
     headers: {
-      'content-type': req.headers.get('content-type'),
-      'x-fastcron-signature': req.headers.get('x-fastcron-signature') || undefined,
-      'x-signature': req.headers.get('x-signature') || undefined,
-      'signature': req.headers.get('signature') || undefined,
-      'user-agent': req.headers.get('user-agent')
-    }
+      'content-type': getHeader('content-type'),
+      'x-fastcron-signature': getHeader('x-fastcron-signature') || undefined,
+      'x-signature': getHeader('x-signature') || undefined,
+      'signature': getHeader('signature') || undefined,
+      'user-agent': getHeader('user-agent')
+    },
+    runtime: req.headers && typeof req.headers.get === 'function' ? 'edge' : 'nodejs'
   });
 
   if (req.method !== 'POST') {
-    return new Response(
-      JSON.stringify({ error: 'Method not allowed' }), 
-      { 
+    const errorResponse = { error: 'Method not allowed' };
+    
+    if (res) {
+      // Node.js runtime
+      return res.status(405).json(errorResponse);
+    } else {
+      // Edge runtime
+      return new Response(JSON.stringify(errorResponse), {
         status: 405,
         headers: { 'Content-Type': 'application/json' }
-      }
-    );
+      });
+    }
   }
 
   try {
-    // Parse request body
+    // Parse request body (compatible with both runtimes)
     let body;
-    const contentType = req.headers.get('content-type');
+    const contentType = getHeader('content-type');
     
-    if (contentType && contentType.includes('application/json')) {
-      body = await req.json();
-    } else {
+    if (req.body && typeof req.body === 'object') {
+      // Body already parsed (Node.js runtime with bodyParser)
+      body = req.body;
+    } else if (req.json && typeof req.json === 'function') {
+      // Edge runtime
+      try {
+        body = await req.json();
+      } catch (e) {
+        body = { timeframe: '10Min', session: 'regular' };
+      }
+    } else if (req.text && typeof req.text === 'function') {
+      // Edge runtime fallback
       const text = await req.text();
       try {
         body = JSON.parse(text);
       } catch {
-        body = { timeframe: '10Min', session: 'regular' }; // Default fallback
+        body = { timeframe: '10Min', session: 'regular' };
       }
+    } else {
+      // Fallback default
+      body = { timeframe: '10Min', session: 'regular' };
     }
 
     console.log('[WEBHOOK] Request body:', body);
@@ -50,35 +85,42 @@ export default async function handler(req) {
     const timeframe = body.timeframe || '10Min';
     const session = body.session || 'regular';
     const force = body.force || false;
-    const symbol = body.symbol || 'QQQ'; // Default symbol
-    const mode = body.mode || 'enhanced'; // 'enhanced' or 'legacy'
+    const symbol = body.symbol || 'QQQ';
+    const mode = body.mode || 'enhanced';
 
     // Verify webhook signature if configured
-    const signature = req.headers.get('x-fastcron-signature') || 
-                     req.headers.get('x-signature') || 
-                     req.headers.get('signature');
+    const signature = getHeader('x-fastcron-signature') || 
+                     getHeader('x-signature') || 
+                     getHeader('signature');
 
-    if (process.env.FASTCRON_SECRET) {
-      const isValidSignature = verifyWebhookSignature(
-        JSON.stringify(body),
-        signature,
-        process.env.FASTCRON_SECRET
-      );
-      
-      if (!isValidSignature) {
-        console.error('[WEBHOOK] Invalid webhook signature');
-        return new Response(
-          JSON.stringify({ error: 'Invalid signature' }), 
-          { 
-            status: 401,
-            headers: { 'Content-Type': 'application/json' }
-          }
+    if (process.env.FASTCRON_SECRET && signature) {
+      try {
+        const { verifyWebhookSignature } = await import('../../lib/security.js');
+        const isValidSignature = verifyWebhookSignature(
+          JSON.stringify(body),
+          signature,
+          process.env.FASTCRON_SECRET
         );
+        
+        if (!isValidSignature) {
+          console.error('[WEBHOOK] Invalid webhook signature');
+          const errorResponse = { error: 'Invalid signature' };
+          
+          if (res) {
+            return res.status(401).json(errorResponse);
+          } else {
+            return new Response(JSON.stringify(errorResponse), {
+              status: 401,
+              headers: { 'Content-Type': 'application/json' }
+            });
+          }
+        }
+        console.log('[WEBHOOK] Webhook signature verified successfully');
+      } catch (secErr) {
+        console.warn('[WEBHOOK] Error verifying signature:', secErr.message);
       }
-      console.log('[WEBHOOK] Webhook signature verified successfully');
     } else {
       console.warn('[WEBHOOK] FASTCRON_SECRET not configured, skipping signature verification');
-      console.log('[WEBHOOK] Webhook signature verified successfully');
     }
 
     // Initialize Supabase client
@@ -91,18 +133,21 @@ export default async function handler(req) {
 
     if (!marketSession.isOpen && !force) {
       console.log('[WEBHOOK] Market is closed, skipping execution');
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: 'Market closed, execution skipped',
-          market_session: marketSession,
-          execution_time_ms: Date.now() - startTime
-        }),
-        { 
+      const response = {
+        success: true,
+        message: 'Market closed, execution skipped',
+        market_session: marketSession,
+        execution_time_ms: Date.now() - startTime
+      };
+      
+      if (res) {
+        return res.status(200).json(response);
+      } else {
+        return new Response(JSON.stringify(response), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
-        }
-      );
+        });
+      }
     }
 
     // Test database connectivity
@@ -111,18 +156,21 @@ export default async function handler(req) {
     
     if (!dbTest.success) {
       console.error('[WEBHOOK] Database connection failed:', dbTest.error);
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'Database connection failed',
-          details: dbTest.error,
-          execution_time_ms: Date.now() - startTime
-        }),
-        { 
+      const errorResponse = {
+        success: false,
+        error: 'Database connection failed',
+        details: dbTest.error,
+        execution_time_ms: Date.now() - startTime
+      };
+      
+      if (res) {
+        return res.status(500).json(errorResponse);
+      } else {
+        return new Response(JSON.stringify(errorResponse), {
           status: 500,
           headers: { 'Content-Type': 'application/json' }
-        }
-      );
+        });
+      }
     }
 
     console.log('[WEBHOOK] Database connectivity confirmed:', dbTest.message);
@@ -133,23 +181,20 @@ export default async function handler(req) {
     if (mode === 'enhanced') {
       console.log(`[WEBHOOK] Executing ENHANCED strategy for ${symbol} ${timeframe}`);
       
-      // Prepare options for enhanced strategy
       const strategyOptions = {
         force,
         limit: body.limit || 100,
         skipNewPatternDetection: body.skipNewPatternDetection || false,
-        legacyLevels: body.legacyLevels // Pass any legacy levels for migration
+        legacyLevels: body.legacyLevels
       };
       
       result = await executeEnhancedStrategy(symbol, timeframe, supabase, strategyOptions);
       
     } else {
-      // Fallback to legacy strategy (if available)
       console.log(`[WEBHOOK] Executing LEGACY strategy for ${symbol} ${timeframe}`);
       
-      // Import and execute legacy strategy
       try {
-        const { executeLevelFlagStrategy } = await import('../lib/level-flag-strategy.js');
+        const { executeLevelFlagStrategy } = await import('../../lib/level-flag-strategy.js');
         result = await executeLevelFlagStrategy(symbol, timeframe, supabase, { force });
       } catch (importErr) {
         console.warn('[WEBHOOK] Legacy strategy not available, using enhanced:', importErr.message);
@@ -157,7 +202,6 @@ export default async function handler(req) {
       }
     }
 
-    // Log execution result
     console.log(`[WEBHOOK] Strategy execution completed:`, {
       success: result.success,
       execution_time_ms: result.execution_time_ms,
@@ -179,33 +223,26 @@ export default async function handler(req) {
       timestamp: new Date().toISOString(),
       total_execution_time_ms: Date.now() - startTime,
       
-      // Strategy results
       strategy_execution_time_ms: result.execution_time_ms,
       bars_processed: result.bars_processed,
       current_price: result.current_price,
       
-      // Pattern activity
       active_patterns_monitored: result.active_patterns_checked || 0,
       patterns_broken_out: result.patterns_broken_out || 0,
       new_patterns_detected: result.new_patterns_detected || 0,
       
-      // Level activity  
       active_levels_monitored: result.active_levels_checked || 0,
       level_touches: result.level_touches || 0,
       levels_updated: result.levels_updated || 0,
       
-      // Trading activity
       trade_signals_generated: result.trade_signals_generated || 0,
       
-      // Maintenance
       patterns_expired: result.patterns_expired || 0,
       levels_invalidated: result.levels_invalidated || 0,
       
-      // Error handling
       error: result.error || null
     };
 
-    // Add detailed results if successful
     if (result.success && result.breakout_signals) {
       response.breakout_details = result.breakout_signals;
       response.level_touch_details = result.level_touches_detail;
@@ -213,33 +250,33 @@ export default async function handler(req) {
     }
 
     // Log webhook completion
-    await logWebhookExecution(supabase, {
-      ...response,
-      headers: Object.fromEntries(req.headers.entries()),
-      body: body
-    });
+    await logWebhookExecution(supabase, response, body);
 
     const statusCode = result.success ? 200 : 500;
     
-    return new Response(
-      JSON.stringify(response),
-      { 
+    if (res) {
+      // Node.js runtime
+      return res.status(statusCode).json(response);
+    } else {
+      // Edge runtime
+      return new Response(JSON.stringify(response), {
         status: statusCode,
         headers: { 'Content-Type': 'application/json' }
-      }
-    );
+      });
+    }
 
   } catch (error) {
     console.error('[WEBHOOK] Webhook execution failed:', error);
+    console.error('[WEBHOOK] Error stack:', error.stack);
     
     const errorResponse = {
       success: false,
       error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
       timestamp: new Date().toISOString(),
       total_execution_time_ms: Date.now() - startTime
     };
 
-    // Try to log error
     try {
       const supabase = SupabaseClient.getInstance();
       await logWebhookError(supabase, errorResponse);
@@ -247,13 +284,14 @@ export default async function handler(req) {
       console.error('[WEBHOOK] Failed to log error:', logErr);
     }
 
-    return new Response(
-      JSON.stringify(errorResponse),
-      { 
+    if (res) {
+      return res.status(500).json(errorResponse);
+    } else {
+      return new Response(JSON.stringify(errorResponse), {
         status: 500,
         headers: { 'Content-Type': 'application/json' }
-      }
-    );
+      });
+    }
   }
 }
 
@@ -262,19 +300,14 @@ export default async function handler(req) {
  */
 function getMarketSession(timeframe, session) {
   const now = new Date();
-  const currentTime = now.toTimeString().slice(0, 5); // HH:MM format
-  const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
+  const currentTime = now.toTimeString().slice(0, 5);
+  const dayOfWeek = now.getDay();
   
-  // Market hours (Eastern Time)
   const marketOpen = '09:30';
   const marketClose = '16:00';
   
-  // Check if it's a weekday
   const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
-  
-  // Check if within market hours
   const isWithinHours = currentTime >= marketOpen && currentTime <= marketClose;
-  
   const isOpen = isWeekday && isWithinHours && session === 'regular';
   
   return {
@@ -295,7 +328,6 @@ function getMarketSession(timeframe, session) {
  */
 async function testDatabaseConnection(supabase) {
   try {
-    // Simple query to test connection
     const { data, error } = await supabase
       .from('aggregated_bars')
       .select('count(*)')
@@ -326,7 +358,7 @@ async function testDatabaseConnection(supabase) {
 /**
  * Log webhook execution to system_events
  */
-async function logWebhookExecution(supabase, executionData) {
+async function logWebhookExecution(supabase, executionData, requestBody) {
   try {
     await supabase
       .from('system_events')
@@ -356,7 +388,8 @@ async function logWebhookExecution(supabase, executionData) {
           trading: {
             signals_generated: executionData.trade_signals_generated
           },
-          market_session: executionData.market_session
+          market_session: executionData.market_session,
+          request_body: requestBody
         }
       });
   } catch (err) {
@@ -378,6 +411,7 @@ async function logWebhookError(supabase, errorData) {
         timestamp: errorData.timestamp,
         event_details: {
           error: errorData.error,
+          stack: errorData.stack,
           execution_time_ms: errorData.total_execution_time_ms
         }
       });
