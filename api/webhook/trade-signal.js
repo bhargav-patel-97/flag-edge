@@ -3,7 +3,7 @@
 // Fixed to work with standard Supabase client exports
 
 import { createClient } from '@supabase/supabase-js';
-import { executeEnhancedStrategy } from '../../lib/enhanced-level-flag-strategy.js';
+import { executeEnhancedStrategy } from '../../lib/level-flag-strategy.js';
 
 export default async function handler(req, res) {
   const startTime = Date.now();
