@@ -1,9 +1,9 @@
 // api/webhook/trade-signal.js
 // Enhanced webhook endpoint that integrates with persistent pattern and level tracking
 
-import { SupabaseClient } from '../lib/supabase-client.js';
-import { executeEnhancedStrategy } from '../lib/enhanced-level-flag-strategy.js';
-import { verifyWebhookSignature } from '../lib/security.js';
+import { SupabaseClient } from '../../lib/supabase-client.js';
+import { executeEnhancedStrategy } from '../../lib/level-flag-strategy.js';
+import { verifyWebhookSignature } from '../../lib/security.js';
 
 export const config = {
   runtime: 'edge',
