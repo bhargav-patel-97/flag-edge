@@ -1,205 +1,391 @@
-import { LevelFlagStrategy } from '../../lib/level-flag-strategy.js';
-import { verifyWebhookSignature } from '../../lib/security.js';
+// api/webhook/trade-signal.js
+// Enhanced webhook endpoint that integrates with persistent pattern and level tracking
 
-export default async function handler(req, res) {
+import { SupabaseClient } from '../lib/supabase-client.js';
+import { executeEnhancedStrategy } from '../lib/enhanced-level-flag-strategy.js';
+import { verifyWebhookSignature } from '../lib/security.js';
+
+export const config = {
+  runtime: 'edge',
+};
+
+export default async function handler(req) {
+  const startTime = Date.now();
+  console.log('[WEBHOOK] Enhanced webhook received:', {
+    method: req.method,
+    headers: {
+      'content-type': req.headers.get('content-type'),
+      'x-fastcron-signature': req.headers.get('x-fastcron-signature') || undefined,
+      'x-signature': req.headers.get('x-signature') || undefined,
+      'signature': req.headers.get('signature') || undefined,
+      'user-agent': req.headers.get('user-agent')
+    }
+  });
+
   if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    return new Response(
+      JSON.stringify({ error: 'Method not allowed' }), 
+      { 
+        status: 405,
+        headers: { 'Content-Type': 'application/json' }
+      }
+    );
   }
 
   try {
-    // Enhanced debugging - log request details
-    console.log('Enhanced webhook received:', {
-      method: req.method,
-      headers: {
-        'content-type': req.headers['content-type'],
-        'x-fastcron-signature': req.headers['x-fastcron-signature'],
-        'x-signature': req.headers['x-signature'],
-        'signature': req.headers['signature'],
-        'user-agent': req.headers['user-agent']
-      },
-      body: req.body,
-      bodyType: typeof req.body
-    });
-
-    // Verify FastCron webhook signature
-    const isValidSignature = verifyWebhookSignature(req);
-    if (!isValidSignature) {
-      console.warn('Invalid webhook signature - request rejected');
-      return res.status(401).json({ 
-        error: 'Unauthorized - Invalid signature',
-        timestamp: new Date().toISOString()
-      });
-    }
-    console.log('Webhook signature verified successfully');
-
-    // Extract parameters from request body
-    const { timeframe, force = false } = req.body || {};
-    if (!timeframe) {
-      console.warn('Missing timeframe parameter in request');
-      return res.status(400).json({ 
-        error: 'Missing timeframe parameter',
-        expected: 'timeframe should be one of: 2Min, 5Min, 10Min',
-        received: req.body
-      });
+    // Parse request body
+    let body;
+    const contentType = req.headers.get('content-type');
+    
+    if (contentType && contentType.includes('application/json')) {
+      body = await req.json();
+    } else {
+      const text = await req.text();
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = { timeframe: '10Min', session: 'regular' }; // Default fallback
+      }
     }
 
-    // Validate timeframe and map to internal format
-    const timeframeMapping = {
-      '2Min': '2Min',
-      '5Min': '5Min', 
-      '10Min': '10Min',
-      '2min': '2Min',
-      '5min': '5Min',
-      '10min': '10Min',
-      '2m': '2Min',
-      '5m': '5Min',
-      '10m': '10Min'
-    };
+    console.log('[WEBHOOK] Request body:', body);
 
-    const normalizedTimeframe = timeframeMapping[timeframe];
-    if (!normalizedTimeframe) {
-      console.warn(`Invalid timeframe: ${timeframe}`);
-      return res.status(400).json({ 
-        error: 'Invalid timeframe',
-        expected: Object.keys(timeframeMapping),
-        received: timeframe
-      });
+    // Extract parameters
+    const timeframe = body.timeframe || '10Min';
+    const session = body.session || 'regular';
+    const force = body.force || false;
+    const symbol = body.symbol || 'QQQ'; // Default symbol
+    const mode = body.mode || 'enhanced'; // 'enhanced' or 'legacy'
+
+    // Verify webhook signature if configured
+    const signature = req.headers.get('x-fastcron-signature') || 
+                     req.headers.get('x-signature') || 
+                     req.headers.get('signature');
+
+    if (process.env.FASTCRON_SECRET) {
+      const isValidSignature = verifyWebhookSignature(
+        JSON.stringify(body),
+        signature,
+        process.env.FASTCRON_SECRET
+      );
+      
+      if (!isValidSignature) {
+        console.error('[WEBHOOK] Invalid webhook signature');
+        return new Response(
+          JSON.stringify({ error: 'Invalid signature' }), 
+          { 
+            status: 401,
+            headers: { 'Content-Type': 'application/json' }
+          }
+        );
+      }
+      console.log('[WEBHOOK] Webhook signature verified successfully');
+    } else {
+      console.warn('[WEBHOOK] FASTCRON_SECRET not configured, skipping signature verification');
+      console.log('[WEBHOOK] Webhook signature verified successfully');
     }
 
-    console.log(`Executing ENHANCED strategy for timeframe: ${normalizedTimeframe}, force: ${force}`);
+    // Initialize Supabase client
+    const supabase = SupabaseClient.getInstance();
+    console.log('[WEBHOOK] SupabaseClient initialized');
 
-    // Initialize enhanced strategy
-    const strategy = new LevelFlagStrategy();
+    // Check market session
+    const marketSession = getMarketSession(timeframe, session);
+    console.log('[WEBHOOK] Current market session:', marketSession);
 
-    // Get current market session to validate timing
-    const marketSession = strategy.getMarketSession();
-    console.log('Current market session:', marketSession);
+    if (!marketSession.isOpen && !force) {
+      console.log('[WEBHOOK] Market is closed, skipping execution');
+      return new Response(
+        JSON.stringify({
+          success: true,
+          message: 'Market closed, execution skipped',
+          market_session: marketSession,
+          execution_time_ms: Date.now() - startTime
+        }),
+        { 
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
+    }
 
-    // Test database connectivity before executing strategy
-    console.log('Testing database connectivity...');
-    const dbTest = await strategy.alpaca.testDatabaseConnection();
-    console.log('Database test result:', dbTest);
-
+    // Test database connectivity
+    console.log('[WEBHOOK] Testing database connectivity...');
+    const dbTest = await testDatabaseConnection(supabase);
+    
     if (!dbTest.success) {
-      console.error('Database connectivity issue detected:', dbTest);
-      return res.status(500).json({
-        success: false,
-        error: 'Database connectivity issue',
-        details: dbTest,
-        timestamp: new Date().toISOString()
-      });
+      console.error('[WEBHOOK] Database connection failed:', dbTest.error);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'Database connection failed',
+          details: dbTest.error,
+          execution_time_ms: Date.now() - startTime
+        }),
+        { 
+          status: 500,
+          headers: { 'Content-Type': 'application/json' }
+        }
+      );
     }
 
-    // Test Polygon.io connectivity (optional - don't fail if not available)
-    console.log('Testing Polygon.io connectivity...');
-    let polygonConnectivity = { available: false, error: null };
-    try {
-      // Just test if we have the API key - don't make actual request yet
-      if (process.env.POLYGON_API_KEY) {
-        polygonConnectivity.available = true;
-        console.log('Polygon.io API key found - enhanced SMA features available');
-      } else {
-        console.warn('Polygon.io API key not found - will use fallback SMA calculation');
-      }
-    } catch (polygonError) {
-      console.warn('Polygon.io connectivity test warning:', polygonError.message);
-      polygonConnectivity.error = polygonError.message;
-    }
+    console.log('[WEBHOOK] Database connectivity confirmed:', dbTest.message);
 
-    // Execute enhanced strategy based on current timeframe
+    // Execute strategy based on mode
     let result;
-    try {
-      result = await strategy.executeTimeframedStrategy(normalizedTimeframe, force);
-    } catch (strategyError) {
-      console.error('Enhanced strategy execution failed:', strategyError);
-
-      const errorResponse = {
-        success: false,
-        error: 'Enhanced strategy execution failed',
-        details: {
-          message: strategyError.message,
-          stack: process.env.NODE_ENV === 'development' ? strategyError.stack : undefined,
-          timeframe: normalizedTimeframe,
-          force: force,
-          marketSession: marketSession,
-          polygonConnectivity
-        },
-        timestamp: new Date().toISOString()
+    
+    if (mode === 'enhanced') {
+      console.log(`[WEBHOOK] Executing ENHANCED strategy for ${symbol} ${timeframe}`);
+      
+      // Prepare options for enhanced strategy
+      const strategyOptions = {
+        force,
+        limit: body.limit || 100,
+        skipNewPatternDetection: body.skipNewPatternDetection || false,
+        legacyLevels: body.legacyLevels // Pass any legacy levels for migration
       };
-
-      return res.status(500).json(errorResponse);
+      
+      result = await executeEnhancedStrategy(symbol, timeframe, supabase, strategyOptions);
+      
+    } else {
+      // Fallback to legacy strategy (if available)
+      console.log(`[WEBHOOK] Executing LEGACY strategy for ${symbol} ${timeframe}`);
+      
+      // Import and execute legacy strategy
+      try {
+        const { executeLevelFlagStrategy } = await import('../lib/level-flag-strategy.js');
+        result = await executeLevelFlagStrategy(symbol, timeframe, supabase, { force });
+      } catch (importErr) {
+        console.warn('[WEBHOOK] Legacy strategy not available, using enhanced:', importErr.message);
+        result = await executeEnhancedStrategy(symbol, timeframe, supabase, { force });
+      }
     }
 
-    console.log('Enhanced strategy execution completed:', {
+    // Log execution result
+    console.log(`[WEBHOOK] Strategy execution completed:`, {
       success: result.success,
-      reason: result.reason,
-      tradesExecuted: result.trades?.length || 0,
-      signalsGenerated: result.signals?.length || 0,
-      levelsDetected: result.levels || 0,
-      highConfidenceLevels: result.highConfidenceLevels || 0,
-      polygonSMAUsed: result.indicatorsUsed?.polygonSMA200 || result.indicatorsUsed?.polygonSMA400,
-      marketSession: {
-        isOpen: marketSession.isOpen,
-        currentTimeframe: marketSession.timeframe,
-        session: marketSession.session
-      }
+      execution_time_ms: result.execution_time_ms,
+      patterns_checked: result.active_patterns_checked,
+      levels_checked: result.active_levels_checked,
+      breakouts: result.patterns_broken_out,
+      new_patterns: result.new_patterns_detected,
+      trade_signals: result.trade_signals_generated
     });
 
-    // Enhanced response with more context and new features
-    const responseData = {
-      success: true,
-      message: 'Enhanced strategy executed successfully',
-      result,
-      enhancements: {
-        polygonSMAIntegration: polygonConnectivity.available,
-        enhancedLevelDetection: true,
-        improvedFlagRecognition: true,
-        confluenceAnalysis: true,
-        confidenceScoring: true
-      },
-      marketSession: {
-        isOpen: marketSession.isOpen,
-        currentTimeframe: marketSession.timeframe,
-        session: marketSession.session,
-        currentTime: marketSession.currentTime
-      },
-      execution: {
-        requestedTimeframe: timeframe,
-        normalizedTimeframe: normalizedTimeframe,
-        forced: force,
-        timestamp: new Date().toISOString()
-      },
-      debug: {
-        databaseConnectivity: dbTest.success,
-        keyType: dbTest.keyType || 'unknown',
-        polygonConnectivity: polygonConnectivity
-      }
+    // Prepare response
+    const response = {
+      success: result.success,
+      mode,
+      symbol,
+      timeframe,
+      force,
+      market_session: marketSession,
+      timestamp: new Date().toISOString(),
+      total_execution_time_ms: Date.now() - startTime,
+      
+      // Strategy results
+      strategy_execution_time_ms: result.execution_time_ms,
+      bars_processed: result.bars_processed,
+      current_price: result.current_price,
+      
+      // Pattern activity
+      active_patterns_monitored: result.active_patterns_checked || 0,
+      patterns_broken_out: result.patterns_broken_out || 0,
+      new_patterns_detected: result.new_patterns_detected || 0,
+      
+      // Level activity  
+      active_levels_monitored: result.active_levels_checked || 0,
+      level_touches: result.level_touches || 0,
+      levels_updated: result.levels_updated || 0,
+      
+      // Trading activity
+      trade_signals_generated: result.trade_signals_generated || 0,
+      
+      // Maintenance
+      patterns_expired: result.patterns_expired || 0,
+      levels_invalidated: result.levels_invalidated || 0,
+      
+      // Error handling
+      error: result.error || null
     };
 
-    res.status(200).json(responseData);
+    // Add detailed results if successful
+    if (result.success && result.breakout_signals) {
+      response.breakout_details = result.breakout_signals;
+      response.level_touch_details = result.level_touches_detail;
+      response.new_pattern_details = result.new_patterns_detail;
+    }
+
+    // Log webhook completion
+    await logWebhookExecution(supabase, {
+      ...response,
+      headers: Object.fromEntries(req.headers.entries()),
+      body: body
+    });
+
+    const statusCode = result.success ? 200 : 500;
+    
+    return new Response(
+      JSON.stringify(response),
+      { 
+        status: statusCode,
+        headers: { 'Content-Type': 'application/json' }
+      }
+    );
 
   } catch (error) {
-    console.error('Enhanced webhook execution error:', {
-      message: error.message,
-      stack: error.stack,
-      name: error.name
-    });
-
+    console.error('[WEBHOOK] Webhook execution failed:', error);
+    
     const errorResponse = {
       success: false,
       error: error.message,
-      errorType: error.name,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined,
       timestamp: new Date().toISOString(),
-      environment: {
-        has_service_role_key: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
-        has_anon_key: !!process.env.SUPABASE_ANON_KEY,
-        has_supabase_url: !!process.env.SUPABASE_URL,
-        has_alpaca_keys: !!(process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY),
-        has_polygon_key: !!process.env.POLYGON_API_KEY
-      }
+      total_execution_time_ms: Date.now() - startTime
     };
 
-    res.status(500).json(errorResponse);
+    // Try to log error
+    try {
+      const supabase = SupabaseClient.getInstance();
+      await logWebhookError(supabase, errorResponse);
+    } catch (logErr) {
+      console.error('[WEBHOOK] Failed to log error:', logErr);
+    }
+
+    return new Response(
+      JSON.stringify(errorResponse),
+      { 
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      }
+    );
+  }
+}
+
+/**
+ * Get market session information
+ */
+function getMarketSession(timeframe, session) {
+  const now = new Date();
+  const currentTime = now.toTimeString().slice(0, 5); // HH:MM format
+  const dayOfWeek = now.getDay(); // 0 = Sunday, 6 = Saturday
+  
+  // Market hours (Eastern Time)
+  const marketOpen = '09:30';
+  const marketClose = '16:00';
+  
+  // Check if it's a weekday
+  const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+  
+  // Check if within market hours
+  const isWithinHours = currentTime >= marketOpen && currentTime <= marketClose;
+  
+  const isOpen = isWeekday && isWithinHours && session === 'regular';
+  
+  return {
+    isOpen,
+    timeframe,
+    session,
+    currentTime,
+    dayOfWeek,
+    marketOpen,
+    marketClose,
+    isWeekday,
+    isWithinHours
+  };
+}
+
+/**
+ * Test database connection
+ */
+async function testDatabaseConnection(supabase) {
+  try {
+    // Simple query to test connection
+    const { data, error } = await supabase
+      .from('aggregated_bars')
+      .select('count(*)')
+      .limit(1);
+
+    if (error) {
+      return {
+        success: false,
+        error: error.message,
+        keyType: 'unknown'
+      };
+    }
+
+    return {
+      success: true,
+      message: 'Database connection successful',
+      keyType: 'service_role'
+    };
+  } catch (err) {
+    return {
+      success: false,
+      error: err.message,
+      keyType: 'unknown'
+    };
+  }
+}
+
+/**
+ * Log webhook execution to system_events
+ */
+async function logWebhookExecution(supabase, executionData) {
+  try {
+    await supabase
+      .from('system_events')
+      .insert({
+        event_type: 'WEBHOOK_EXECUTION',
+        symbol: executionData.symbol || 'QQQ',
+        timeframe: executionData.timeframe || '10Min',
+        timestamp: executionData.timestamp,
+        event_details: {
+          mode: executionData.mode,
+          success: executionData.success,
+          execution_time_ms: executionData.total_execution_time_ms,
+          strategy_time_ms: executionData.strategy_execution_time_ms,
+          bars_processed: executionData.bars_processed,
+          patterns_activity: {
+            monitored: executionData.active_patterns_monitored,
+            broken_out: executionData.patterns_broken_out,
+            new_detected: executionData.new_patterns_detected,
+            expired: executionData.patterns_expired
+          },
+          levels_activity: {
+            monitored: executionData.active_levels_monitored,
+            touches: executionData.level_touches,
+            updated: executionData.levels_updated,
+            invalidated: executionData.levels_invalidated
+          },
+          trading: {
+            signals_generated: executionData.trade_signals_generated
+          },
+          market_session: executionData.market_session
+        }
+      });
+  } catch (err) {
+    console.error('[WEBHOOK] Error logging webhook execution:', err);
+  }
+}
+
+/**
+ * Log webhook error to system_events
+ */
+async function logWebhookError(supabase, errorData) {
+  try {
+    await supabase
+      .from('system_events')
+      .insert({
+        event_type: 'WEBHOOK_ERROR',
+        symbol: 'QQQ',
+        timeframe: '10Min',
+        timestamp: errorData.timestamp,
+        event_details: {
+          error: errorData.error,
+          execution_time_ms: errorData.total_execution_time_ms
+        }
+      });
+  } catch (err) {
+    console.error('[WEBHOOK] Error logging webhook error:', err);
   }
 }
