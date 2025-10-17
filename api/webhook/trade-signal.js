@@ -2,7 +2,7 @@
 // Enhanced webhook endpoint - Compatible with both Node.js and Edge runtimes
 
 import { SupabaseClient } from '../../lib/supabase-client.js';
-import { executeEnhancedStrategy } from '../../lib/enhanced-level-flag-strategy.js';
+import { executeEnhancedStrategy } from '../../lib/level-flag-strategy.js';
 
 // Remove edge runtime config if causing issues
 // export const config = {
