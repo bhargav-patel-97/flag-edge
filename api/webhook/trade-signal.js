@@ -1,12 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
 
-
 // Initialize Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
-
 
 // Enhanced strategy execution
 async function executeEnhancedStrategy(params) {
@@ -52,16 +50,16 @@ async function executeEnhancedStrategy(params) {
     console.log('[ENHANCED] Step 8: Processing trade signals...');
     const tradeSignals = processTradeSignals(breakouts, levelTouches, marketData);
     
-    // Step 9: Update execution state (FIXED)
+    // Step 9: Update execution state (FIXED - using correct column names)
     console.log('[ENHANCED] Step 9: Updating execution state...');
     await updateExecutionState(symbol, timeframe, {
-      lastPrice: marketData.currentPrice,
-      lastBarTime: marketData.lastBarTime,
-      patternsChecked: patterns.length,
-      levelsChecked: levels.length,
-      breakoutsDetected: breakouts.length,
-      newPatternsDetected: newPatterns.length,
-      signalsGenerated: tradeSignals.length
+      lastBarProcessed: marketData.lastBarTime,
+      lastExecutionTime: new Date().toISOString(),
+      activePatternsCount: patterns.length,
+      activeLevelsCount: levels.length,
+      barsAnalyzed: marketData.bars?.length || 0,
+      patternsDetectedToday: newPatterns.length,
+      signalsGeneratedToday: tradeSignals.length
     });
     
     // Step 10: Cleanup
@@ -87,8 +85,7 @@ async function executeEnhancedStrategy(params) {
   }
 }
 
-
-// Load execution state
+// Load execution state (FIXED - using correct column names)
 async function loadExecutionState(symbol, timeframe) {
   try {
     const { data, error } = await supabase
@@ -103,17 +100,21 @@ async function loadExecutionState(symbol, timeframe) {
     }
     
     if (!data) {
-      // Create new execution state
+      // Create new execution state with CORRECT column names
       const newState = {
         symbol,
         timeframe,
-        last_price: null,
-        last_bar_time: null,
-        patterns_checked: 0,
-        levels_checked: 0,
-        breakouts_detected: 0,
-        new_patterns_detected: 0,
-        signals_generated: 0,
+        last_bar_processed: null,
+        last_execution_time: new Date().toISOString(),
+        active_patterns_count: 0,
+        active_levels_count: 0,
+        bars_analyzed: 0,
+        patterns_detected_today: 0,
+        signals_generated_today: 0,
+        trades_executed_today: 0,
+        levels_cache_updated: null,
+        patterns_cache_updated: null,
+        last_daily_reset: new Date().toISOString().split('T')[0],
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
@@ -137,23 +138,23 @@ async function loadExecutionState(symbol, timeframe) {
   }
 }
 
-
-// Update execution state (FIXED VERSION)
+// Update execution state (FIXED - using correct column names)
 async function updateExecutionState(symbol, timeframe, updates) {
   try {
     // Prepare update object with only valid fields
     const updateData = {
-      updated_at: new Date().toISOString() // Fixed: changed from last_updated
+      updated_at: new Date().toISOString()
     };
     
-    // Map the updates to database fields
-    if (updates.lastPrice !== undefined) updateData.last_price = updates.lastPrice;
-    if (updates.lastBarTime !== undefined) updateData.last_bar_time = updates.lastBarTime;
-    if (updates.patternsChecked !== undefined) updateData.patterns_checked = updates.patternsChecked;
-    if (updates.levelsChecked !== undefined) updateData.levels_checked = updates.levelsChecked;
-    if (updates.breakoutsDetected !== undefined) updateData.breakouts_detected = updates.breakoutsDetected;
-    if (updates.newPatternsDetected !== undefined) updateData.new_patterns_detected = updates.newPatternsDetected;
-    if (updates.signalsGenerated !== undefined) updateData.signals_generated = updates.signalsGenerated;
+    // Map the updates to database fields (FIXED column names)
+    if (updates.lastBarProcessed !== undefined) updateData.last_bar_processed = updates.lastBarProcessed;
+    if (updates.lastExecutionTime !== undefined) updateData.last_execution_time = updates.lastExecutionTime;
+    if (updates.activePatternsCount !== undefined) updateData.active_patterns_count = updates.activePatternsCount;
+    if (updates.activeLevelsCount !== undefined) updateData.active_levels_count = updates.activeLevelsCount;
+    if (updates.barsAnalyzed !== undefined) updateData.bars_analyzed = updates.barsAnalyzed;
+    if (updates.patternsDetectedToday !== undefined) updateData.patterns_detected_today = updates.patternsDetectedToday;
+    if (updates.signalsGeneratedToday !== undefined) updateData.signals_generated_today = updates.signalsGeneratedToday;
+    if (updates.tradesExecutedToday !== undefined) updateData.trades_executed_today = updates.tradesExecutedToday;
     
     const { data, error } = await supabase
       .from('execution_state')
@@ -180,8 +181,7 @@ async function updateExecutionState(symbol, timeframe, updates) {
   }
 }
 
-
-// Load active levels
+// Load active levels (FIXED - using correct column name 'price_level')
 async function loadActiveLevels(symbol, timeframe) {
   try {
     const { data, error } = await supabase
@@ -190,7 +190,7 @@ async function loadActiveLevels(symbol, timeframe) {
       .eq('symbol', symbol)
       .eq('timeframe', timeframe)
       .eq('is_active', true)
-      .order('level_price', { ascending: true });
+      .order('price_level', { ascending: true }); // FIXED: was 'level_price'
     
     if (error) throw error;
     
@@ -202,8 +202,7 @@ async function loadActiveLevels(symbol, timeframe) {
   }
 }
 
-
-// Load active patterns
+// Load active patterns (FIXED - using 'stage' column instead of 'status')
 async function loadActivePatterns(symbol, timeframe) {
   try {
     const { data, error } = await supabase
@@ -211,8 +210,8 @@ async function loadActivePatterns(symbol, timeframe) {
       .select('*')
       .eq('symbol', symbol)
       .eq('timeframe', timeframe)
-      .eq('status', 'active')
-      .order('created_at', { ascending: false });
+      .in('stage', ['FORMING', 'CONSOLIDATING', 'CONFIRMED']) // FIXED: was .eq('status', 'active')
+      .order('detected_at', { ascending: false });
     
     if (error) throw error;
     
@@ -223,7 +222,6 @@ async function loadActivePatterns(symbol, timeframe) {
     return [];
   }
 }
-
 
 // Fetch market data - CORRECTED AUTHENTICATION
 async function fetchMarketData(symbol, timeframe) {
@@ -244,6 +242,7 @@ async function fetchMarketData(symbol, timeframe) {
     // Map timeframe to Alpaca format
     const timeframeMap = {
       '1Min': '1Min',
+      '2Min': '2Min',
       '5Min': '5Min',
       '10Min': '10Min',
       '15Min': '15Min',
@@ -299,7 +298,6 @@ async function fetchMarketData(symbol, timeframe) {
   }
 }
 
-
 // Check pattern breakouts
 function checkPatternBreakouts(patterns, marketData) {
   const breakouts = [];
@@ -308,7 +306,7 @@ function checkPatternBreakouts(patterns, marketData) {
     // Check if price has broken out of pattern
     const { currentPrice } = marketData;
     
-    if (pattern.breakout_price && currentPrice >= pattern.breakout_price) {
+    if (pattern.breakout_level && currentPrice >= pattern.breakout_level) {
       breakouts.push({
         pattern_id: pattern.id,
         type: 'bullish',
@@ -328,15 +326,14 @@ function checkPatternBreakouts(patterns, marketData) {
   return breakouts;
 }
 
-
-// Check level touches
+// Check level touches (FIXED - using correct column name 'price_level')
 function checkLevelTouches(levels, marketData) {
   const touches = [];
   const { currentPrice, high, low } = marketData;
   const touchThreshold = 0.001; // 0.1% threshold
   
   for (const level of levels) {
-    const levelPrice = level.level_price;
+    const levelPrice = level.price_level; // FIXED: was level.level_price
     const priceRange = levelPrice * touchThreshold;
     
     // Check if price touched the level
@@ -353,14 +350,12 @@ function checkLevelTouches(levels, marketData) {
   return touches;
 }
 
-
 // Update levels
 async function updateLevels(symbol, timeframe, marketData) {
   // Placeholder for level update logic
   // This would typically recalculate support/resistance levels
   return true;
 }
-
 
 // Process trade signals
 function processTradeSignals(breakouts, levelTouches, marketData) {
@@ -391,7 +386,6 @@ function processTradeSignals(breakouts, levelTouches, marketData) {
   return signals;
 }
 
-
 // Cleanup old data - CORRECTED TABLE NAME
 async function cleanupOldData(symbol, timeframe) {
   try {
@@ -404,7 +398,7 @@ async function cleanupOldData(symbol, timeframe) {
       .delete()
       .eq('symbol', symbol)
       .eq('timeframe', timeframe)
-      .lt('created_at', cutoffDate.toISOString());
+      .lt('detected_at', cutoffDate.toISOString());
     
     console.log(`[info] Cleaned up old patterns for ${symbol} ${timeframe}`);
     return true;
@@ -413,7 +407,6 @@ async function cleanupOldData(symbol, timeframe) {
     return false;
   }
 }
-
 
 // Check market session
 function checkMarketSession(params) {
@@ -446,7 +439,6 @@ function checkMarketSession(params) {
     isWithinHours
   };
 }
-
 
 // Main webhook handler
 export default async function handler(req, res) {
