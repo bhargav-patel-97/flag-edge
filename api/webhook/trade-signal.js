@@ -255,7 +255,7 @@ async function fetchMarketData(symbol, timeframe) {
     const alpacaTimeframe = timeframeMap[timeframe] || timeframe;
     
     // Fetch bars from Alpaca
-    const url = `${alpacaUrl}/v2/stocks/${symbol}/bars?timeframe=${alpacaTimeframe}&start=${start.toISOString()}&end=${end.toISOString()}&limit=100`;
+    const url = `${alpacaUrl}/v2/stocks/${symbol}/bars?timeframe=${alpacaTimeframe}&start=${start.toISOString()}&end=${end.toISOString()}&limit=10000`;
     
     console.log(`[MARKET_DATA] Fetching from: ${url}`);
     
