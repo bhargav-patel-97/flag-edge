@@ -1,10 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 
+
 // Initialize Supabase client
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+
 
 // Enhanced strategy execution
 async function executeEnhancedStrategy(params) {
@@ -85,6 +87,7 @@ async function executeEnhancedStrategy(params) {
   }
 }
 
+
 // Load execution state
 async function loadExecutionState(symbol, timeframe) {
   try {
@@ -134,6 +137,7 @@ async function loadExecutionState(symbol, timeframe) {
   }
 }
 
+
 // Update execution state (FIXED VERSION)
 async function updateExecutionState(symbol, timeframe, updates) {
   try {
@@ -176,11 +180,12 @@ async function updateExecutionState(symbol, timeframe, updates) {
   }
 }
 
+
 // Load active levels
 async function loadActiveLevels(symbol, timeframe) {
   try {
     const { data, error } = await supabase
-      .from('support_resistance_levels')
+      .from('detected_levels')
       .select('*')
       .eq('symbol', symbol)
       .eq('timeframe', timeframe)
@@ -197,11 +202,12 @@ async function loadActiveLevels(symbol, timeframe) {
   }
 }
 
+
 // Load active patterns
 async function loadActivePatterns(symbol, timeframe) {
   try {
     const { data, error } = await supabase
-      .from('chart_patterns')
+      .from('pattern_states')
       .select('*')
       .eq('symbol', symbol)
       .eq('timeframe', timeframe)
@@ -218,16 +224,17 @@ async function loadActivePatterns(symbol, timeframe) {
   }
 }
 
-// Fetch market data
+
+// Fetch market data - CORRECTED AUTHENTICATION
 async function fetchMarketData(symbol, timeframe) {
   try {
-    // Get Alpaca credentials
+    // FIXED: Corrected environment variable name from ALPACA_SECRET_KEY to ALPACA_API_SECRET
     const alpacaKey = process.env.ALPACA_API_KEY;
-    const alpacaSecret = process.env.ALPACA_SECRET_KEY;
+    const alpacaSecret = process.env.ALPACA_API_SECRET;
     const alpacaUrl = process.env.ALPACA_DATA_URL || 'https://data.alpaca.markets';
     
     if (!alpacaKey || !alpacaSecret) {
-      throw new Error('Alpaca credentials not configured');
+      throw new Error('Alpaca credentials not configured. Please set ALPACA_API_KEY and ALPACA_API_SECRET environment variables.');
     }
     
     // Calculate time range
@@ -251,6 +258,8 @@ async function fetchMarketData(symbol, timeframe) {
     // Fetch bars from Alpaca
     const url = `${alpacaUrl}/v2/stocks/${symbol}/bars?timeframe=${alpacaTimeframe}&start=${start.toISOString()}&end=${end.toISOString()}&limit=100`;
     
+    console.log(`[MARKET_DATA] Fetching from: ${url}`);
+    
     const response = await fetch(url, {
       headers: {
         'APCA-API-KEY-ID': alpacaKey,
@@ -259,6 +268,8 @@ async function fetchMarketData(symbol, timeframe) {
     });
     
     if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`[MARKET_DATA] Alpaca API error response:`, errorText);
       throw new Error(`Alpaca API error: ${response.status} ${response.statusText}`);
     }
     
@@ -266,10 +277,13 @@ async function fetchMarketData(symbol, timeframe) {
     const bars = result.bars || [];
     
     if (bars.length === 0) {
+      console.warn(`[MARKET_DATA] No bars returned for ${symbol}`);
       throw new Error('No market data received');
     }
     
     const latestBar = bars[bars.length - 1];
+    
+    console.log(`[MARKET_DATA] Successfully fetched ${bars.length} bars for ${symbol}`);
     
     return {
       bars,
@@ -284,6 +298,7 @@ async function fetchMarketData(symbol, timeframe) {
     throw error;
   }
 }
+
 
 // Check pattern breakouts
 function checkPatternBreakouts(patterns, marketData) {
@@ -313,6 +328,7 @@ function checkPatternBreakouts(patterns, marketData) {
   return breakouts;
 }
 
+
 // Check level touches
 function checkLevelTouches(levels, marketData) {
   const touches = [];
@@ -337,12 +353,14 @@ function checkLevelTouches(levels, marketData) {
   return touches;
 }
 
+
 // Update levels
 async function updateLevels(symbol, timeframe, marketData) {
   // Placeholder for level update logic
   // This would typically recalculate support/resistance levels
   return true;
 }
+
 
 // Process trade signals
 function processTradeSignals(breakouts, levelTouches, marketData) {
@@ -373,26 +391,29 @@ function processTradeSignals(breakouts, levelTouches, marketData) {
   return signals;
 }
 
-// Cleanup old data
+
+// Cleanup old data - CORRECTED TABLE NAME
 async function cleanupOldData(symbol, timeframe) {
   try {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - 30); // Keep last 30 days
     
-    // Clean up old patterns
+    // FIXED: Changed from 'chart_patterns' to 'pattern_states'
     await supabase
-      .from('chart_patterns')
+      .from('pattern_states')
       .delete()
       .eq('symbol', symbol)
       .eq('timeframe', timeframe)
       .lt('created_at', cutoffDate.toISOString());
     
+    console.log(`[info] Cleaned up old patterns for ${symbol} ${timeframe}`);
     return true;
   } catch (error) {
     console.error('Error during cleanup:', error);
     return false;
   }
 }
+
 
 // Check market session
 function checkMarketSession(params) {
@@ -426,6 +447,7 @@ function checkMarketSession(params) {
   };
 }
 
+
 // Main webhook handler
 export default async function handler(req, res) {
   const startTime = Date.now();
@@ -443,6 +465,13 @@ export default async function handler(req, res) {
       },
       runtime: 'nodejs'
     });
+    
+    // Log environment variables status
+    console.log('[ENV] Environment check:');
+    console.log('[ENV] ALPACA_API_KEY:', process.env.ALPACA_API_KEY ? '✓ Set' : '✗ Missing');
+    console.log('[ENV] ALPACA_API_SECRET:', process.env.ALPACA_API_SECRET ? '✓ Set' : '✗ Missing');
+    console.log('[ENV] SUPABASE_URL:', process.env.SUPABASE_URL ? '✓ Set' : '✗ Missing');
+    console.log('[ENV] SUPABASE_SERVICE_ROLE_KEY:', process.env.SUPABASE_SERVICE_ROLE_KEY ? '✓ Set' : '✗ Missing');
     
     // Only accept POST requests
     if (req.method !== 'POST') {
