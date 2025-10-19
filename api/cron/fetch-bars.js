@@ -12,8 +12,8 @@ export default async function handler(req, res) {
     if (!process.env.SUPABASE_SERVICE_ROLE_KEY && !process.env.SUPABASE_ANON_KEY) {
       throw new Error('Missing required Supabase keys: SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY required');
     }
-    if (!process.env.ALPACA_API_KEY || !process.env.ALPACA_SECRET_KEY) {
-      throw new Error('Missing required Alpaca environment variables: ALPACA_API_KEY and ALPACA_SECRET_KEY');
+    if (!process.env.ALPACA_API_SECRET || !process.env.ALPACA_SECRET_KEY) {
+      throw new Error('Missing required Alpaca environment variables: ALPACA_API_SECRET and ALPACA_SECRET_KEY');
     }
 
     // Log which key type we're using
@@ -131,7 +131,7 @@ export default async function handler(req, res) {
         has_service_role_key: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
         has_anon_key: !!process.env.SUPABASE_ANON_KEY,
         has_supabase_url: !!process.env.SUPABASE_URL,
-        has_alpaca_keys: !!(process.env.ALPACA_API_KEY && process.env.ALPACA_SECRET_KEY)
+        has_alpaca_keys: !!(process.env.ALPACA_API_SECRET && process.env.ALPACA_SECRET_KEY)
       }
     };
 
