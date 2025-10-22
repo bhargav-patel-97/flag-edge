@@ -225,78 +225,51 @@ async function loadActivePatterns(symbol, timeframe) {
 
 // Fetch market data - CORRECTED AUTHENTICATION
 async function fetchMarketData(symbol, timeframe) {
+  console.log(`[MARKET_DATA] Fetching ${symbol} ${timeframe} bars from Supabase...`);
+  
   try {
-    // FIXED: Corrected environment variable name from ALPACA_SECRET_KEY to ALPACA_API_SECRET
-    const alpacaKey = process.env.ALPACA_API_KEY;
-    const alpacaSecret = process.env.ALPACA_API_SECRET;
-    const alpacaUrl = process.env.ALPACA_DATA_URL || 'https://data.alpaca.markets';
+    // For flag detection, we need ~100-150 bars minimum
+    // Fetch 200 for safety margin
+    const barsToFetch = 200;
     
-    if (!alpacaKey || !alpacaSecret) {
-      throw new Error('Alpaca credentials not configured. Please set ALPACA_API_KEY and ALPACA_API_SECRET environment variables.');
+    // Query Supabase for recent aggregated bars
+    const { data: bars, error } = await supabase
+      .from('aggregated_bars')
+      .select('*')
+      .eq('symbol', symbol)
+      .eq('timeframe', timeframe)
+      .order('timestamp', { ascending: false })
+      .limit(barsToFetch);
+    
+    if (error) {
+      console.error('[MARKET_DATA] Supabase error:', error);
+      throw new Error(`Supabase query error: ${error.message}`);
     }
     
-    // Calculate time range
-    const end = new Date();
-    const start = new Date(end.getTime() - (24 * 60 * 60 * 1000)); // 24 hours ago
-    
-    // Map timeframe to Alpaca format
-    const timeframeMap = {
-      '1Min': '1Min',
-      '2Min': '2Min',
-      '5Min': '5Min',
-      '10Min': '10Min',
-      '15Min': '15Min',
-      '30Min': '30Min',
-      '1H': '1Hour',
-      '4H': '4Hour',
-      '1D': '1Day'
-    };
-    
-    const alpacaTimeframe = timeframeMap[timeframe] || timeframe;
-    
-    // Fetch bars from Alpaca
-    const url = `${alpacaUrl}/v2/stocks/${symbol}/bars?timeframe=${alpacaTimeframe}&start=${start.toISOString()}&end=${end.toISOString()}&limit=10000`;
-    
-    console.log(`[MARKET_DATA] Fetching from: ${url}`);
-    
-    const response = await fetch(url, {
-      headers: {
-        'APCA-API-KEY-ID': alpacaKey,
-        'APCA-API-SECRET-KEY': alpacaSecret
-      }
-    });
-    
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[MARKET_DATA] Alpaca API error response:`, errorText);
-      throw new Error(`Alpaca API error: ${response.status} ${response.statusText}`);
+    if (!bars || bars.length === 0) {
+      console.warn(`[MARKET_DATA] No bars found for ${symbol} ${timeframe}`);
+      return [];
     }
     
-    const result = await response.json();
-    const bars = result.bars || [];
+    // Reverse to chronological order (oldest first)
+    const chronologicalBars = bars.reverse();
     
-    if (bars.length === 0) {
-      console.warn(`[MARKET_DATA] No bars returned for ${symbol}`);
-      throw new Error('No market data received');
+    console.log(`[MARKET_DATA] Loaded ${chronologicalBars.length} bars from Supabase`);
+    console.log(`[MARKET_DATA] Date range: ${chronologicalBars[0].timestamp} to ${chronologicalBars[chronologicalBars.length-1].timestamp}`);
+    
+    // Validate we have enough bars for flag detection
+    if (chronologicalBars.length < 100) {
+      console.warn(`[MARKET_DATA] Warning: Only ${chronologicalBars.length} bars available, need 100+ for reliable flag detection`);
     }
     
-    const latestBar = bars[bars.length - 1];
+    return chronologicalBars;
     
-    console.log(`[MARKET_DATA] Successfully fetched ${bars.length} bars for ${symbol}`);
-    
-    return {
-      bars,
-      currentPrice: latestBar.c,
-      lastBarTime: latestBar.t,
-      high: latestBar.h,
-      low: latestBar.l,
-      volume: latestBar.v
-    };
-  } catch (error) {
-    console.error('Error fetching market data:', error);
-    throw error;
+  } catch (err) {
+    console.error('[MARKET_DATA] Error fetching data:', err);
+    throw err;
   }
 }
+
 
 // Check pattern breakouts
 function checkPatternBreakouts(patterns, marketData) {
