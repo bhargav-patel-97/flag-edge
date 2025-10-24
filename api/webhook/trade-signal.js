@@ -613,7 +613,7 @@ function checkLevelTouch(level, marketData) {
       levelType: level.level_type,
       priceLevel: levelPrice,
       touchPrice: currentPrice,
-      touchType: held ? 'bounce' : 'break',
+      touchType: held ? 'BOUNCE' : 'BREAK',
       held: held,
       distance: Math.abs(currentPrice - levelPrice),
       distancePct: Math.abs(currentPrice - levelPrice) / levelPrice
