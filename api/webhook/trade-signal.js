@@ -15,7 +15,7 @@ const supabase = createClient(
 const alpacaBaseURL = process.env.ALPACA_BASE_URL || 'https://paper-api.alpaca.markets';
 const alpacaHeaders = {
   'APCA-API-KEY-ID': process.env.ALPACA_API_KEY,
-  'APCA-API-SECRET-KEY': process.env.ALPACA_SECRET_KEY
+  'APCA-API-SECRET-KEY': process.env.ALPACA_API_SECRET
 };
 
 // Main webhook handler
