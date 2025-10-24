@@ -1,9 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
-import { FlagDetector } from '../lib/flag-detector.js';
-import { LevelManager } from '../lib/level-manager.js';
-import { PatternManager } from '../lib/pattern-manager.js';
-import { OptionSelector } from '../lib/option-selector.js';
-import { RiskManager } from '../lib/risk-manager.js';
+import { FlagDetector } from '../../lib/flag-detector.js'
+import { LevelManager } from '../../lib/level-manager.js';
+import { PatternManager } from '../../lib/pattern-manager.js';
+import { OptionSelector } from '../../lib/option-selector.js';
+import { RiskManager } from '../../lib/risk-manager.js';
 
 // Initialize Supabase client
 const supabase = createClient(
